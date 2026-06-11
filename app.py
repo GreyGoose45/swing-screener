@@ -126,11 +126,21 @@ def mtf_trends(ticker):
             out.setdefault(k, "neutral")
     return out
 
-def mtf_verdict(t):
+def structural_up(p):
+    """Uebergeordneter Daily-Trend nach STRUKTUR: EMA50>EMA200 (steigend), Kurs>EMA200.
+    Bewusst ohne Kurs-vs-EMA20 — ein Pullback bricht den uebergeordneten Trend nicht."""
+    if len(p) < 10:
+        return False
+    r = p.iloc[-1]
+    return bool(r.EMA50 > r.EMA200 and p.EMA50.iloc[-1] > p.EMA50.iloc[-6]
+                and r.Close > r.EMA200)
+
+def mtf_verdict(t, daily_struct_up=False):
     """Bewertung nach der Praemisse: W+D muessen aufwaerts zeigen;
     1h/4h duerfen abwaerts zeigen (= Pullback-Konstellation)."""
-    if t["Weekly"] == "up" and t["Daily"] == "up":
-        if t["4h"] == "up" and t["1h"] == "up":
+    daily_ok = t["Daily"] == "up" or (t["Daily"] == "neutral" and daily_struct_up)
+    if t["Weekly"] == "up" and daily_ok:
+        if t["4h"] == "up" and t["1h"] == "up" and t["Daily"] == "up":
             return ("success", "✅ Alle Timeframes aufwärts ausgerichtet — "
                     "Trend-Continuation/Breakout-Modus.")
         return ("warning", "🟡 Übergeordnet (W+D) aufwärts, kurzfristig (4h/1h) Gegenbewegung — "
@@ -141,11 +151,11 @@ def mtf_verdict(t):
     return ("warning", "⚪ Übergeordneter Trend uneindeutig/seitwärts — abwarten, "
             "bis Weekly und Daily klar aufwärts zeigen.")
 
-def render_mtf(t):
+def render_mtf(t, daily_struct_up=False):
     cols = st.columns(4)
     for c, (label, state) in zip(cols, t.items()):
         c.metric(label, TREND_ICON[state])
-    kind, msg = mtf_verdict(t)
+    kind, msg = mtf_verdict(t, daily_struct_up)
     getattr(st, kind)(msg)
 
 # ----------------------------- Setup-Erkennung ---------------------------
@@ -262,8 +272,10 @@ def build_checklist(p, trends, rs, row=None, min_crv=1.5):
     add(bool(r.EMA50 > r.EMA200), "EMA 50 über EMA 200")
     add(bool(len(p) > 6 and p.EMA50.iloc[-1] > p.EMA50.iloc[-6]), "EMA 50 steigend")
     add(bool(rs > 0), f"Relative Stärke vs. S&P 500 (3M): {rs:+.1f}%")
-    add(trends.get("Weekly") == "up" and trends.get("Daily") == "up",
-        "Übergeordneter Trend (Weekly + Daily) aufwärts")
+    daily_struct = structural_up(p)
+    add(trends.get("Weekly") == "up" and daily_struct,
+        "Übergeordneter Trend aufwärts (Weekly-Ampel + Daily-Struktur "
+        "EMA50>EMA200 steigend, Kurs>EMA200)")
 
     setup = row["Setup"] if row is not None else None
     if setup and setup.startswith("A"):
@@ -441,7 +453,7 @@ def make_chart(p, row=None, levels=None, title=""):
 def render_detail(row, p, api_key, min_crv=1.5):
     trends = mtf_trends(row["Ticker"])
     st.markdown("##### Multi-Timeframe-Trend")
-    render_mtf(trends)
+    render_mtf(trends, structural_up(p))
     levels = find_levels(p)
     st.plotly_chart(make_chart(p, row, levels, f"{row['Ticker']} — {row['Setup']}"),
                     use_container_width=True)
@@ -620,7 +632,7 @@ def main():
                             st.markdown(f"- {grund}")
                         st.markdown("##### Multi-Timeframe-Trend")
                         trends = mtf_trends(tk)
-                        render_mtf(trends)
+                        render_mtf(trends, structural_up(p))
                         st.plotly_chart(make_chart(p, None, find_levels(p), f"{tk} — Übersicht"),
                                         use_container_width=True)
                         rs_single = float((p.Close.iloc[-1] / p.Close.iloc[-63] - 1) * 100
