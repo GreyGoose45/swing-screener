@@ -1,5 +1,44 @@
-streamlit>=1.32
-yfinance>=0.2.40
-pandas>=2.0
-numpy>=1.24
-plotly>=5.18
+# Swing-Screener Dashboard v2
+
+Tägliches Screening über S&P 500 / Dow Jones 30 nach den Plan-Kriterien
+(Ø-Volumen > 1 Mio, ATR 2–6%, EMA-Trendfilter). Zeigt die Top-10-Setups mit
+Rang 1–10, Trigger/Stop/Ziel im Chart, Volumen-Panel mit 20-Tage-Schnitt
+und einer ausformulierten Begründung der Trade-Idee unter jedem Chart.
+
+## Dateien (alle hochladen!)
+
+```
+app.py
+requirements.txt
+README.md
+.streamlit/config.toml   <- Dark-Mode-Theme (Ordner mitsamt Datei anlegen)
+```
+
+Hinweis: Auf GitHub den Ordner anlegen, indem du beim Hochladen/Erstellen
+als Dateinamen `.streamlit/config.toml` eingibst — GitHub erzeugt den Ordner dann automatisch.
+
+## Gratis online hosten (einmalig ~10 Minuten)
+
+1. GitHub-Account anlegen (github.com)
+2. Neues Repository erstellen (z. B. `swing-screener`, public)
+3. Die vier Dateien hochladen (inkl. `.streamlit/config.toml`)
+4. Auf share.streamlit.io mit GitHub anmelden
+5. "Create app" → Repository wählen, Main file: `app.py` → Deploy
+6. Feste URL als Lesezeichen / Homescreen-Icon speichern
+
+## Tägliche Nutzung (Abendroutine, nach US-Schluss)
+
+1. URL öffnen (App wacht nach Inaktivität in ~30 Sek. auf)
+2. Universum wählen (S&P 500) → **Scan starten**
+   – erster Scan des Tages: 1–3 Minuten, danach Cache (1 Std.)
+3. Top-10-Tabelle: Rang, Trigger, Stop, Ziel, CRV, Volumen-Faktor, Stückzahl
+4. Kandidat auswählen → Chart + Begründung lesen
+5. **Earnings manuell prüfen** (TradingView "E"-Symbol)
+6. Für max. 1–2 Kandidaten Stop-Buy in Trading212 platzieren
+
+## Grenzen (ehrlich)
+
+- Kursdaten: Yahoo Finance, End-of-Day — richtig für Daily-Setups, nicht für Intraday
+- Earnings-Termine werden NICHT automatisch geprüft — manueller Pflichtcheck
+- Score & Begründung sind regelbasiert (deine Plan-Regeln als Code), keine KI-Analyse
+  und kein Profitabilitäts-Versprechen. Entscheidung triffst du am Chart.
