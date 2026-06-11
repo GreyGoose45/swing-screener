@@ -61,8 +61,9 @@ def prepare(df):
     df["RSI14"] = rsi(df["Close"], 14)
     df["ATR14"] = atr(df, 14)
     df["High20"] = df["High"].rolling(20).max()
+    df["Volume"] = df["Volume"].fillna(0)  # Futures/Indizes liefern teils kein Volumen
     df["VolAvg20"] = df["Volume"].rolling(20).mean()
-    return df.dropna()
+    return df.dropna(subset=["Close", "High", "Low", "ATR14", "High20", "EMA200"])
 
 # --------------------- Support/Resistance-Zonen --------------------------
 
@@ -218,6 +219,8 @@ def detect(df, ticker, bench_perf3m, apply_universe_filter=True):
 
 def no_setup_reasons(p):
     """Erklaert regelbasiert, warum KEIN Setup vorliegt."""
+    if len(p) == 0:
+        return ["Keine auswertbaren Kursdaten (z. B. Futures/Index ohne saubere Historie)."]
     r = p.iloc[-1]
     reasons = []
     atr_pct = r.ATR14 / r.Close * 100
@@ -242,7 +245,71 @@ def no_setup_reasons(p):
             reasons.append("Keine Überdehnung nach unten (RSI(2) ≥ 10) — kein Mean-Reversion-Fall")
     return reasons or ["Kein Muster trifft die Regelkriterien — beobachten statt erzwingen."]
 
-# ----------------------------- Begründung --------------------------------
+# ----------------------------- Playbook-Checkliste -----------------------
+
+def build_checklist(p, trends, rs, row=None, min_crv=1.5):
+    """Bewertet alle objektiven Plan-Kriterien. True=erfuellt, False=nicht, None=manuell."""
+    r = p.iloc[-1]
+    atr_pct = float(r.ATR14 / r.Close * 100)
+    items = []
+    add = lambda ok, txt: items.append((ok, txt))
+
+    add(bool(r.VolAvg20 >= MIN_AVG_VOLUME),
+        f"Liquidität: Ø-Volumen {r.VolAvg20/1e6:.1f} Mio (≥ 1 Mio)")
+    add(ATR_PCT_MIN <= atr_pct <= ATR_PCT_MAX,
+        f"Volatilitätsfenster: ATR {atr_pct:.1f}% (Soll 2–6%)")
+    add(bool(r.Close > r.EMA200), f"Kurs über EMA 200 ({r.EMA200:.2f})")
+    add(bool(r.EMA50 > r.EMA200), "EMA 50 über EMA 200")
+    add(bool(len(p) > 6 and p.EMA50.iloc[-1] > p.EMA50.iloc[-6]), "EMA 50 steigend")
+    add(bool(rs > 0), f"Relative Stärke vs. S&P 500 (3M): {rs:+.1f}%")
+    add(trends.get("Weekly") == "up" and trends.get("Daily") == "up",
+        "Übergeordneter Trend (Weekly + Daily) aufwärts")
+
+    setup = row["Setup"] if row is not None else None
+    if setup and setup.startswith("A"):
+        add(bool(p.High.iloc[-20:].max() >= p.High20.iloc[-1] * 0.999),
+            "Neues 20-Tage-Hoch innerhalb der letzten 20 Tage")
+        band_hi, band_lo = max(r.EMA20, r.EMA50), min(r.EMA20, r.EMA50)
+        add(bool(r.Low <= band_hi and r.Close >= band_lo),
+            f"Pullback ins EMA-20/50-Band, Schluss hält darüber ({band_lo:.2f}–{band_hi:.2f})")
+        add(35 <= float(r.RSI14) <= 55, f"RSI(14) im Pullback-Fenster 35–55 (ist {r.RSI14:.0f})")
+        add(trends.get("4h") != "up" or trends.get("1h") != "up",
+            "Kurzfristige Gegenbewegung (4h/1h) = Pullback-Konstellation")
+        add(bool(row["CRV"] >= min_crv), f"CRV ≥ {min_crv} (ist {row['CRV']:.2f})")
+    elif setup and setup.startswith("B"):
+        add(float(r.RSI2) < 10, f"RSI(2) < 10 (ist {r.RSI2:.1f})")
+        add(bool((r.EMA20 - r.Close) >= 1.5 * r.ATR14),
+            f"Überdehnung: ≥ 1,5×ATR unter EMA 20 (ist {(r.EMA20-r.Close)/r.ATR14:.1f}×)")
+        add(None, "Kein fundamentaler Grund für den Abverkauf (News manuell prüfen!)")
+    elif setup == "Flat-Top-Breakout":
+        add(bool(row.get("m_touches", 0) >= 2),
+            f"Widerstand mehrfach getestet ({row.get('m_touches', 0)}× ≥ 2)")
+        add(bool(row.get("m_dist", 99) <= 3.0),
+            f"Kurs nah am Trigger ({row.get('m_dist', 0):.1f}% ≤ 3%)")
+        add(bool(row.get("m_range15", 99) <= 12),
+            f"Enge Konsolidierung (Range {row.get('m_range15', 0):.1f}% ≤ 12%)")
+        add(None, f"Volumen am AUSBRUCHSTAG ≥ 1,5× Ø20 (heute {row['VolFaktor']:.1f}× — "
+                  "erst bei Ausführung bewertbar)")
+        add(bool(row["CRV"] >= min_crv), f"CRV ≥ {min_crv} (ist {row['CRV']:.2f})")
+
+    add(None, "Earnings ≥ 10 Handelstage entfernt (manuell prüfen — TradingView 'E')")
+    add(None, "Max. 3 offene Positionen / 1 pro Sektor (selbst prüfen)")
+    return items
+
+def render_checklist(items):
+    erfuellt = sum(1 for ok, _ in items if ok is True)
+    bewertbar = sum(1 for ok, _ in items if ok is not None)
+    offen = sum(1 for ok, _ in items if ok is None)
+    st.markdown(f"### ✅ Playbook-Checkliste — {erfuellt}/{bewertbar} objektive Kriterien erfüllt"
+                + (f" · {offen} manuell zu prüfen" if offen else ""))
+    for ok, txt in items:
+        icon = "✅" if ok is True else ("❌" if ok is False else "⚠️")
+        st.markdown(f"{icon} {txt}")
+    if erfuellt < bewertbar:
+        st.error("Mindestens ein objektives Kriterium ist NICHT erfüllt — nach Playbook "
+                 "ist das kein vollwertiger Trade. Kein Kriterium wegdiskutieren.")
+
+
 
 def explain(row):
     s, t = row["Setup"], row["Ticker"]
@@ -371,13 +438,14 @@ def make_chart(p, row=None, levels=None, title=""):
 
 # ------------------------- Detail-Ansicht (gemeinsam) ---------------------
 
-def render_detail(row, p, api_key):
+def render_detail(row, p, api_key, min_crv=1.5):
     trends = mtf_trends(row["Ticker"])
     st.markdown("##### Multi-Timeframe-Trend")
     render_mtf(trends)
     levels = find_levels(p)
     st.plotly_chart(make_chart(p, row, levels, f"{row['Ticker']} — {row['Setup']}"),
                     use_container_width=True)
+    render_checklist(build_checklist(p, trends, row["RS3M"], row, min_crv))
     st.markdown("### 📋 Begründung der Trade-Idee")
     st.markdown(explain(row))
     st.markdown("### 🤖 KI-Zweitmeinung (optional)")
@@ -510,7 +578,7 @@ def main():
                 options = [f"#{i} {r.Ticker} — {r.Setup}" for i, r in zip(res.index, res.itertuples())]
                 sel = st.selectbox("Setup im Detail:", options)
                 row = res.iloc[options.index(sel)]
-                render_detail(row, st.session_state["frames"][row["Ticker"]], api_key)
+                render_detail(row, st.session_state["frames"][row["Ticker"]], api_key, min_crv)
 
     # ---------- Tab 2: Einzelanalyse ----------
     with tab_single:
@@ -528,6 +596,12 @@ def main():
                     st.error(f"Zu wenig Kurshistorie für {tk} (mind. ~1 Jahr nötig).")
                 else:
                     p = prepare(df)
+                    if len(p) < 200:
+                        st.error(f"{tk}: zu wenig auswertbare Daten nach Aufbereitung — "
+                                 "vermutlich Futures/Index ohne saubere Historie. "
+                                 "Das Tool ist für Aktien gebaut (Trading212 Invest "
+                                 "handelt ohnehin keine Futures).")
+                        st.stop()
                     bench = load_tf(BENCHMARK, "1d")
                     bench_perf = float((bench.Close.iloc[-1] / bench.Close.iloc[-63] - 1) * 100)
                     hits = detect(p, tk, bench_perf, apply_universe_filter=False)
@@ -538,16 +612,20 @@ def main():
                         stk = konto * risk_pct / 100 / fx / best["Risiko/Stk $"]
                         st.markdown(f"**Positionsgröße:** {stk:.2f} Stück "
                                     f"(~{stk * best['Trigger']:.0f} $) bei {risk_pct}% Risiko")
-                        render_detail(pd.Series(best), p, api_key)
+                        render_detail(pd.Series(best), p, api_key, min_crv)
                     else:
                         st.warning("**Kein regelkonformes Setup — aktuell keine sinnvolle "
                                    "Handelsmöglichkeit nach Plan.**")
                         for grund in no_setup_reasons(p):
                             st.markdown(f"- {grund}")
                         st.markdown("##### Multi-Timeframe-Trend")
-                        render_mtf(mtf_trends(tk))
+                        trends = mtf_trends(tk)
+                        render_mtf(trends)
                         st.plotly_chart(make_chart(p, None, find_levels(p), f"{tk} — Übersicht"),
                                         use_container_width=True)
+                        rs_single = float((p.Close.iloc[-1] / p.Close.iloc[-63] - 1) * 100
+                                          - bench_perf) if len(p) > 63 else 0.0
+                        render_checklist(build_checklist(p, trends, rs_single))
             except Exception as ex:
                 st.error(f"Konnte {tk} nicht laden: {ex}")
 
